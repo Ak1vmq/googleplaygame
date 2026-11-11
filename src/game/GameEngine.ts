@@ -8,9 +8,91 @@ export interface GameState {
   isGameOver: boolean;
   isPlaying: boolean;
   lives: number;
+  combo: number;
+  comboMultiplier: number;
+  currentWorld: number;
+  worldName: string;
+  activePowerUp: string | null;
+  powerUpTimer: number;
+  shieldActive: boolean;
+  magnetActive: boolean;
+  doubleCoinsActive: boolean;
+  superJumpActive: boolean;
 }
 
 export type GameCallback = (state: GameState) => void;
+
+export interface WorldTheme {
+  name: string;
+  skyColor: number;
+  fogColor: number;
+  groundColor: number;
+  roadColor: number;
+  treeColors: number[];
+  ambientColor: number;
+  emoji: string;
+  minDistance: number;
+}
+
+export const WORLDS: WorldTheme[] = [
+  {
+    name: 'Rainbow Forest',
+    skyColor: 0x87CEEB,
+    fogColor: 0x87CEEB,
+    groundColor: 0x4CAF50,
+    roadColor: 0x555555,
+    treeColors: [0x228B22, 0x32CD32, 0x00AA00, 0x44BB44],
+    ambientColor: 0xffffff,
+    emoji: '🌲',
+    minDistance: 0
+  },
+  {
+    name: 'Neon City',
+    skyColor: 0x1a0533,
+    fogColor: 0x1a0533,
+    groundColor: 0x222222,
+    roadColor: 0x333333,
+    treeColors: [0xFF00FF, 0x00FFFF, 0xFFFF00, 0xFF6600],
+    ambientColor: 0x8888ff,
+    emoji: '🏙️',
+    minDistance: 500
+  },
+  {
+    name: 'Crystal Cave',
+    skyColor: 0x0a0a2e,
+    fogColor: 0x0a0a2e,
+    groundColor: 0x1a1a3e,
+    roadColor: 0x2a2a4e,
+    treeColors: [0x9B59B6, 0x3498DB, 0xE74C3C, 0x1ABC9C],
+    ambientColor: 0x6666cc,
+    emoji: '💎',
+    minDistance: 1200
+  },
+  {
+    name: 'Space Galaxy',
+    skyColor: 0x000011,
+    fogColor: 0x000022,
+    groundColor: 0x111133,
+    roadColor: 0x222244,
+    treeColors: [0xFF69B4, 0x00CED1, 0xFFD700, 0xFF4500],
+    ambientColor: 0x4444aa,
+    emoji: '🚀',
+    minDistance: 2000
+  },
+  {
+    name: 'Candy Land',
+    skyColor: 0xFFB6C1,
+    fogColor: 0xFFB6C1,
+    groundColor: 0x98FB98,
+    roadColor: 0xFF69B4,
+    treeColors: [0xFF1493, 0xFF6347, 0xFFD700, 0x00CED1],
+    ambientColor: 0xffccff,
+    emoji: '🍭',
+    minDistance: 3000
+  }
+];
+
+export type PowerUpType = 'magnet' | 'shield' | 'doubleCoins' | 'superJump' | null;
 
 export class GameEngine {
   private scene: THREE.Scene;
@@ -20,11 +102,13 @@ export class GameEngine {
   private road: THREE.Group;
   private obstacles: THREE.Group[] = [];
   private collectibles: THREE.Group[] = [];
+  private powerUps: THREE.Group[] = [];
   private particles: THREE.Points[] = [];
   private trees: THREE.Group[] = [];
   private clouds: THREE.Mesh[] = [];
+  private stars: THREE.Points | null = null;
 
-  private currentLane = 1; // 0, 1, 2
+  private currentLane = 1;
   private targetLaneX = 0;
   private laneWidth = 2.5;
   private isJumping = false;
@@ -34,10 +118,11 @@ export class GameEngine {
   private slideTimer = 0;
 
   private gameSpeed = 0.15;
-  private maxSpeed = 0.45;
-  private speedIncrement = 0.0001;
+  private maxSpeed = 0.5;
+  private speedIncrement = 0.00008;
   private spawnTimer = 0;
   private collectibleTimer = 0;
+  private powerUpTimer = 0;
   private treeTimer = 0;
   private cloudTimer = 0;
   private distance = 0;
@@ -51,14 +136,37 @@ export class GameEngine {
   private lastTime = 0;
 
   private onStateChange: GameCallback;
-  private clock: THREE.Clock;
 
   private playerBounce = 0;
   private invincibleTimer = 0;
 
+  // Combo system
+  private combo = 0;
+  private comboTimer = 0;
+  private comboMultiplier = 1;
+  private lastCollectTime = 0;
+
+  // Power-ups
+  private activePowerUp: PowerUpType = null;
+  private powerUpDuration = 0;
+  private shieldActive = false;
+  private magnetActive = false;
+  private doubleCoinsActive = false;
+  private superJumpActive = false;
+
+  // World
+  private currentWorldIndex = 0;
+  private worldTransitionAlpha = 0;
+
+  // Player skin
+  private playerColor: number = 0xFF6B6B;
+  private hatColor: number = 0x4ECDC4;
+
+  private ambientLight: THREE.AmbientLight;
+  private dirLight: THREE.DirectionalLight;
+
   constructor(container: HTMLElement, onStateChange: GameCallback) {
     this.onStateChange = onStateChange;
-    this.clock = new THREE.Clock();
 
     // Scene
     this.scene = new THREE.Scene();
@@ -84,21 +192,15 @@ export class GameEngine {
     container.appendChild(this.renderer.domElement);
 
     // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    this.scene.add(ambientLight);
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    this.scene.add(this.ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(5, 10, 5);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 1024;
-    dirLight.shadow.mapSize.height = 1024;
-    dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 50;
-    dirLight.shadow.camera.left = -10;
-    dirLight.shadow.camera.right = 10;
-    dirLight.shadow.camera.top = 10;
-    dirLight.shadow.camera.bottom = -10;
-    this.scene.add(dirLight);
+    this.dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    this.dirLight.position.set(5, 10, 5);
+    this.dirLight.castShadow = true;
+    this.dirLight.shadow.mapSize.width = 1024;
+    this.dirLight.shadow.mapSize.height = 1024;
+    this.scene.add(this.dirLight);
 
     // Create game objects
     this.player = this.createPlayer();
@@ -106,25 +208,35 @@ export class GameEngine {
     this.scene.add(this.player);
     this.scene.add(this.road);
 
-    // Create initial environment
     this.createInitialEnvironment();
 
-    // Handle resize
     window.addEventListener('resize', () => this.handleResize(container));
+  }
+
+  setPlayerSkin(bodyColor: number, hatColor: number): void {
+    this.playerColor = bodyColor;
+    this.hatColor = hatColor;
+    
+    const body = this.player.children[0] as THREE.Mesh;
+    if (body && body.material instanceof THREE.MeshPhongMaterial) {
+      body.material.color.setHex(bodyColor);
+    }
+    const hat = this.player.children[3] as THREE.Mesh;
+    if (hat && hat.material instanceof THREE.MeshPhongMaterial) {
+      hat.material.color.setHex(hatColor);
+    }
   }
 
   private createPlayer(): THREE.Group {
     const group = new THREE.Group();
 
-    // Body
     const bodyGeom = new THREE.CapsuleGeometry(0.3, 0.5, 8, 16);
-    const bodyMat = new THREE.MeshPhongMaterial({ color: 0xFF6B6B, shininess: 80 });
+    const bodyMat = new THREE.MeshPhongMaterial({ color: this.playerColor, shininess: 80 });
     const body = new THREE.Mesh(bodyGeom, bodyMat);
     body.position.y = 0.5;
     body.castShadow = true;
     group.add(body);
 
-    // Head
     const headGeom = new THREE.SphereGeometry(0.25, 16, 16);
     const headMat = new THREE.MeshPhongMaterial({ color: 0xFFDBB5, shininess: 80 });
     const head = new THREE.Mesh(headGeom, headMat);
@@ -132,7 +244,6 @@ export class GameEngine {
     head.castShadow = true;
     group.add(head);
 
-    // Eyes
     const eyeGeom = new THREE.SphereGeometry(0.05, 8, 8);
     const eyeMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
     const leftEye = new THREE.Mesh(eyeGeom, eyeMat);
@@ -142,15 +253,13 @@ export class GameEngine {
     rightEye.position.set(0.08, 1.15, 0.2);
     group.add(rightEye);
 
-    // Hat
     const hatGeom = new THREE.ConeGeometry(0.2, 0.3, 8);
-    const hatMat = new THREE.MeshPhongMaterial({ color: 0x4ECDC4 });
+    const hatMat = new THREE.MeshPhongMaterial({ color: this.hatColor });
     const hat = new THREE.Mesh(hatGeom, hatMat);
     hat.position.y = 1.4;
     hat.castShadow = true;
     group.add(hat);
 
-    // Legs
     const legGeom = new THREE.CapsuleGeometry(0.1, 0.3, 4, 8);
     const legMat = new THREE.MeshPhongMaterial({ color: 0x4A90D9 });
     const leftLeg = new THREE.Mesh(legGeom, legMat);
@@ -162,6 +271,31 @@ export class GameEngine {
     rightLeg.name = 'rightLeg';
     group.add(rightLeg);
 
+    // Arms
+    const armGeom = new THREE.CapsuleGeometry(0.08, 0.3, 4, 8);
+    const armMat = new THREE.MeshPhongMaterial({ color: this.playerColor });
+    const leftArm = new THREE.Mesh(armGeom, armMat);
+    leftArm.position.set(-0.4, 0.6, 0);
+    leftArm.name = 'leftArm';
+    group.add(leftArm);
+    const rightArm = new THREE.Mesh(armGeom, armMat);
+    rightArm.position.set(0.4, 0.6, 0);
+    rightArm.name = 'rightArm';
+    group.add(rightArm);
+
+    // Shield visual (hidden by default)
+    const shieldGeom = new THREE.SphereGeometry(0.8, 16, 16);
+    const shieldMat = new THREE.MeshPhongMaterial({
+      color: 0x00BFFF,
+      transparent: true,
+      opacity: 0,
+      shininess: 100
+    });
+    const shield = new THREE.Mesh(shieldGeom, shieldMat);
+    shield.position.y = 0.7;
+    shield.name = 'shield';
+    group.add(shield);
+
     group.position.set(0, 0, 0);
     return group;
   }
@@ -169,20 +303,16 @@ export class GameEngine {
   private createRoad(): THREE.Group {
     const group = new THREE.Group();
 
-    // Main road
     const roadGeom = new THREE.PlaneGeometry(8, 200);
-    const roadMat = new THREE.MeshPhongMaterial({
-      color: 0x555555,
-      shininess: 10
-    });
+    const roadMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 10 });
     const road = new THREE.Mesh(roadGeom, roadMat);
     road.rotation.x = -Math.PI / 2;
     road.position.y = 0;
     road.position.z = -80;
     road.receiveShadow = true;
+    road.name = 'mainRoad';
     group.add(road);
 
-    // Lane markings
     for (let i = -1; i <= 1; i += 2) {
       for (let z = 0; z > -200; z -= 4) {
         const markGeom = new THREE.PlaneGeometry(0.1, 2);
@@ -194,7 +324,6 @@ export class GameEngine {
       }
     }
 
-    // Side grass
     const grassGeom = new THREE.PlaneGeometry(30, 200);
     const grassMat = new THREE.MeshPhongMaterial({ color: 0x4CAF50 });
     
@@ -202,15 +331,16 @@ export class GameEngine {
     leftGrass.rotation.x = -Math.PI / 2;
     leftGrass.position.set(-19, -0.01, -80);
     leftGrass.receiveShadow = true;
+    leftGrass.name = 'leftGrass';
     group.add(leftGrass);
 
     const rightGrass = new THREE.Mesh(grassGeom, grassMat);
     rightGrass.rotation.x = -Math.PI / 2;
     rightGrass.position.set(19, -0.01, -80);
     rightGrass.receiveShadow = true;
+    rightGrass.name = 'rightGrass';
     group.add(rightGrass);
 
-    // Sidewalk
     const sideGeom = new THREE.BoxGeometry(1, 0.15, 200);
     const sideMat = new THREE.MeshPhongMaterial({ color: 0xBBBBBB });
     
@@ -228,21 +358,82 @@ export class GameEngine {
   }
 
   private createInitialEnvironment(): void {
-    // Create initial trees
     for (let i = 0; i < 20; i++) {
-      this.spawnTree(-15 - Math.random() * 15);
+      const side = Math.random() > 0.5 ? 1 : -1;
+      this.spawnTree(side * (6 + Math.random() * 15));
     }
-    // Create initial clouds
     for (let i = 0; i < 8; i++) {
       this.spawnCloud();
+    }
+    this.createStarField();
+  }
+
+  private createStarField(): void {
+    const starGeom = new THREE.BufferGeometry();
+    const starPositions = new Float32Array(500 * 3);
+    for (let i = 0; i < 500; i++) {
+      starPositions[i * 3] = (Math.random() - 0.5) * 100;
+      starPositions[i * 3 + 1] = 15 + Math.random() * 30;
+      starPositions[i * 3 + 2] = -Math.random() * 100;
+    }
+    starGeom.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0xFFFFFF, size: 0.2, transparent: true, opacity: 0 });
+    this.stars = new THREE.Points(starGeom, starMat);
+    this.scene.add(this.stars);
+  }
+
+  private updateWorldTheme(): void {
+    const dist = this.distance;
+    let newWorldIndex = 0;
+    for (let i = WORLDS.length - 1; i >= 0; i--) {
+      if (dist >= WORLDS[i].minDistance) {
+        newWorldIndex = i;
+        break;
+      }
+    }
+
+    if (newWorldIndex !== this.currentWorldIndex) {
+      this.currentWorldIndex = newWorldIndex;
+      this.applyWorldTheme(WORLDS[newWorldIndex]);
+    }
+  }
+
+  private applyWorldTheme(world: WorldTheme): void {
+    // Animate sky color transition
+    (this.scene.background as THREE.Color).setHex(world.skyColor);
+    (this.scene.fog as THREE.Fog).color.setHex(world.fogColor);
+
+    // Update road color
+    const mainRoad = this.road.getObjectByName('mainRoad') as THREE.Mesh;
+    if (mainRoad && mainRoad.material instanceof THREE.MeshPhongMaterial) {
+      mainRoad.material.color.setHex(world.roadColor);
+    }
+
+    // Update grass
+    const leftGrass = this.road.getObjectByName('leftGrass') as THREE.Mesh;
+    const rightGrass = this.road.getObjectByName('rightGrass') as THREE.Mesh;
+    if (leftGrass && leftGrass.material instanceof THREE.MeshPhongMaterial) {
+      leftGrass.material.color.setHex(world.groundColor);
+    }
+    if (rightGrass && rightGrass.material instanceof THREE.MeshPhongMaterial) {
+      rightGrass.material.color.setHex(world.groundColor);
+    }
+
+    // Update ambient light
+    this.ambientLight.color.setHex(world.ambientColor);
+
+    // Stars visibility for space world
+    if (this.stars) {
+      const mat = this.stars.material as THREE.PointsMaterial;
+      mat.opacity = world.name === 'Space Galaxy' ? 0.8 : 0;
     }
   }
 
   private spawnTree(x: number): void {
     const group = new THREE.Group();
     const z = -Math.random() * 100 - 10;
+    const world = WORLDS[this.currentWorldIndex];
 
-    // Trunk
     const trunkGeom = new THREE.CylinderGeometry(0.2, 0.3, 2, 8);
     const trunkMat = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
     const trunk = new THREE.Mesh(trunkGeom, trunkMat);
@@ -250,15 +441,86 @@ export class GameEngine {
     trunk.castShadow = true;
     group.add(trunk);
 
-    // Foliage
-    const colors = [0x228B22, 0x32CD32, 0x00AA00, 0x44BB44];
-    const foliageColor = colors[Math.floor(Math.random() * colors.length)];
-    const foliageGeom = new THREE.SphereGeometry(1 + Math.random() * 0.5, 8, 8);
-    const foliageMat = new THREE.MeshPhongMaterial({ color: foliageColor });
-    const foliage = new THREE.Mesh(foliageGeom, foliageMat);
-    foliage.position.y = 2.5 + Math.random() * 0.5;
-    foliage.castShadow = true;
-    group.add(foliage);
+    const foliageColor = world.treeColors[Math.floor(Math.random() * world.treeColors.length)];
+    
+    if (this.currentWorldIndex === 1) {
+      // Neon city - buildings instead of trees
+      const buildGeom = new THREE.BoxGeometry(1 + Math.random(), 3 + Math.random() * 4, 1 + Math.random());
+      const buildMat = new THREE.MeshPhongMaterial({ 
+        color: foliageColor, 
+        emissive: foliageColor,
+        emissiveIntensity: 0.3 
+      });
+      const building = new THREE.Mesh(buildGeom, buildMat);
+      building.position.y = 2 + Math.random() * 2;
+      building.castShadow = true;
+      group.add(building);
+    } else if (this.currentWorldIndex === 2) {
+      // Crystal cave - crystals
+      const crystalGeom = new THREE.OctahedronGeometry(0.8 + Math.random() * 0.5, 0);
+      const crystalMat = new THREE.MeshPhongMaterial({ 
+        color: foliageColor, 
+        transparent: true, 
+        opacity: 0.7,
+        emissive: foliageColor,
+        emissiveIntensity: 0.2,
+        shininess: 100
+      });
+      const crystal = new THREE.Mesh(crystalGeom, crystalMat);
+      crystal.position.y = 1.5 + Math.random();
+      crystal.rotation.y = Math.random() * Math.PI;
+      crystal.castShadow = true;
+      group.add(crystal);
+    } else if (this.currentWorldIndex === 3) {
+      // Space - planets
+      const planetGeom = new THREE.SphereGeometry(0.5 + Math.random() * 1, 16, 16);
+      const planetMat = new THREE.MeshPhongMaterial({ 
+        color: foliageColor,
+        emissive: foliageColor,
+        emissiveIntensity: 0.1
+      });
+      const planet = new THREE.Mesh(planetGeom, planetMat);
+      planet.position.y = 2 + Math.random() * 3;
+      planet.castShadow = true;
+      group.add(planet);
+
+      // Ring
+      if (Math.random() > 0.5) {
+        const ringGeom = new THREE.TorusGeometry(1.2, 0.1, 8, 32);
+        const ringMat = new THREE.MeshPhongMaterial({ color: 0xFFFFFF, transparent: true, opacity: 0.5 });
+        const ring = new THREE.Mesh(ringGeom, ringMat);
+        ring.position.y = planet.position.y;
+        ring.rotation.x = Math.PI / 3;
+        group.add(ring);
+      }
+    } else if (this.currentWorldIndex === 4) {
+      // Candy land - lollipops
+      const stickGeom = new THREE.CylinderGeometry(0.05, 0.05, 2, 8);
+      const stickMat = new THREE.MeshPhongMaterial({ color: 0xFFFFFF });
+      const stick = new THREE.Mesh(stickGeom, stickMat);
+      stick.position.y = 1;
+      group.add(stick);
+
+      const candyGeom = new THREE.SphereGeometry(0.5, 16, 16);
+      const candyMat = new THREE.MeshPhongMaterial({ 
+        color: foliageColor, 
+        shininess: 100,
+        emissive: foliageColor,
+        emissiveIntensity: 0.1
+      });
+      const candy = new THREE.Mesh(candyGeom, candyMat);
+      candy.position.y = 2.3;
+      candy.castShadow = true;
+      group.add(candy);
+    } else {
+      // Forest - normal trees
+      const foliageGeom = new THREE.SphereGeometry(1 + Math.random() * 0.5, 8, 8);
+      const foliageMat = new THREE.MeshPhongMaterial({ color: foliageColor });
+      const foliage = new THREE.Mesh(foliageGeom, foliageMat);
+      foliage.position.y = 2.5 + Math.random() * 0.5;
+      foliage.castShadow = true;
+      group.add(foliage);
+    }
 
     group.position.set(x, 0, z);
     this.scene.add(group);
@@ -290,7 +552,7 @@ export class GameEngine {
     const lane = Math.floor(Math.random() * 3);
     const group = new THREE.Group();
 
-    const types = ['barrier', 'cone', 'rock'];
+    const types = ['barrier', 'cone', 'rock', 'laser'];
     const type = types[Math.floor(Math.random() * types.length)];
 
     if (type === 'barrier') {
@@ -301,7 +563,6 @@ export class GameEngine {
       mesh.castShadow = true;
       group.add(mesh);
 
-      // Stripes
       const stripeGeom = new THREE.BoxGeometry(0.3, 1.2, 0.52);
       const stripeMat = new THREE.MeshPhongMaterial({ color: 0xFFFFFF });
       for (let i = -1; i <= 1; i++) {
@@ -316,27 +577,41 @@ export class GameEngine {
       mesh.position.y = 0.6;
       mesh.castShadow = true;
       group.add(mesh);
-
-      const baseGeom = new THREE.BoxGeometry(0.8, 0.1, 0.8);
-      const baseMat = new THREE.MeshPhongMaterial({ color: 0xFF8C00 });
-      const base = new THREE.Mesh(baseGeom, baseMat);
-      base.position.y = 0.05;
-      group.add(base);
-    } else {
+    } else if (type === 'rock') {
       const geom = new THREE.DodecahedronGeometry(0.6, 0);
       const mat = new THREE.MeshPhongMaterial({ color: 0x888888 });
       const mesh = new THREE.Mesh(geom, mat);
       mesh.position.y = 0.5;
       mesh.castShadow = true;
       group.add(mesh);
+    } else {
+      // Laser beam (need to slide under)
+      const geom = new THREE.CylinderGeometry(0.05, 0.05, 2.2, 8);
+      const mat = new THREE.MeshPhongMaterial({ 
+        color: 0xFF0000, 
+        emissive: 0xFF0000, 
+        emissiveIntensity: 0.5 
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.y = 1.0;
+      mesh.rotation.z = Math.PI / 2;
+      group.add(mesh);
+
+      // Posts
+      const postGeom = new THREE.CylinderGeometry(0.08, 0.08, 1.2, 8);
+      const postMat = new THREE.MeshPhongMaterial({ color: 0x444444 });
+      const leftPost = new THREE.Mesh(postGeom, postMat);
+      leftPost.position.set(-1.0, 0.6, 0);
+      group.add(leftPost);
+      const rightPost = new THREE.Mesh(postGeom, postMat);
+      rightPost.position.set(1.0, 0.6, 0);
+      group.add(rightPost);
+
+      group.userData.isLaser = true;
     }
 
-    group.position.set(
-      (lane - 1) * this.laneWidth,
-      0,
-      -60
-    );
-    group.userData = { type: 'obstacle', lane };
+    group.position.set((lane - 1) * this.laneWidth, 0, -60);
+    group.userData = { ...group.userData, type: 'obstacle', lane };
     this.scene.add(group);
     this.obstacles.push(group);
   }
@@ -345,10 +620,30 @@ export class GameEngine {
     const lane = Math.floor(Math.random() * 3);
     const group = new THREE.Group();
 
-    const isStar = Math.random() > 0.6;
+    const rand = Math.random();
+    let value = 1;
+    let isSpecial = false;
 
-    if (isStar) {
-      // Star
+    if (rand > 0.92) {
+      // Diamond (rare, worth 10)
+      value = 10;
+      isSpecial = true;
+      const geom = new THREE.OctahedronGeometry(0.3, 0);
+      const mat = new THREE.MeshPhongMaterial({
+        color: 0x00BFFF,
+        emissive: 0x0066FF,
+        emissiveIntensity: 0.4,
+        shininess: 100,
+        transparent: true,
+        opacity: 0.8
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.y = 1.2;
+      mesh.castShadow = true;
+      group.add(mesh);
+    } else if (rand > 0.75) {
+      // Star (worth 5)
+      value = 5;
       const starShape = new THREE.Shape();
       const outerRadius = 0.3;
       const innerRadius = 0.15;
@@ -356,25 +651,14 @@ export class GameEngine {
         const outerAngle = (i * 2 * Math.PI) / 5 - Math.PI / 2;
         const innerAngle = outerAngle + Math.PI / 5;
         if (i === 0) {
-          starShape.moveTo(
-            Math.cos(outerAngle) * outerRadius,
-            Math.sin(outerAngle) * outerRadius
-          );
+          starShape.moveTo(Math.cos(outerAngle) * outerRadius, Math.sin(outerAngle) * outerRadius);
         } else {
-          starShape.lineTo(
-            Math.cos(outerAngle) * outerRadius,
-            Math.sin(outerAngle) * outerRadius
-          );
+          starShape.lineTo(Math.cos(outerAngle) * outerRadius, Math.sin(outerAngle) * outerRadius);
         }
-        starShape.lineTo(
-          Math.cos(innerAngle) * innerRadius,
-          Math.sin(innerAngle) * innerRadius
-        );
+        starShape.lineTo(Math.cos(innerAngle) * innerRadius, Math.sin(innerAngle) * innerRadius);
       }
       starShape.closePath();
-
-      const extrudeSettings = { depth: 0.1, bevelEnabled: false };
-      const geom = new THREE.ExtrudeGeometry(starShape, extrudeSettings);
+      const geom = new THREE.ExtrudeGeometry(starShape, { depth: 0.1, bevelEnabled: false });
       const mat = new THREE.MeshPhongMaterial({
         color: 0xFFD700,
         emissive: 0xFFAA00,
@@ -385,9 +669,9 @@ export class GameEngine {
       mesh.position.y = 1.2;
       mesh.castShadow = true;
       group.add(mesh);
-      group.userData = { type: 'collectible', value: 5, lane };
     } else {
       // Coin
+      value = 1;
       const geom = new THREE.CylinderGeometry(0.25, 0.25, 0.08, 16);
       const mat = new THREE.MeshPhongMaterial({
         color: 0xFFD700,
@@ -400,20 +684,103 @@ export class GameEngine {
       mesh.rotation.x = Math.PI / 2;
       mesh.castShadow = true;
       group.add(mesh);
-      group.userData = { type: 'collectible', value: 1, lane };
     }
 
-    group.position.set(
-      (lane - 1) * this.laneWidth,
-      0,
-      -60
-    );
+    group.position.set((lane - 1) * this.laneWidth, 0, -60);
+    group.userData = { type: 'collectible', value, isSpecial, lane };
     this.scene.add(group);
     this.collectibles.push(group);
   }
 
-  private createParticleEffect(position: THREE.Vector3, color: number): void {
-    const particleCount = 15;
+  private createPowerUp(): void {
+    const lane = Math.floor(Math.random() * 3);
+    const group = new THREE.Group();
+
+    const types: PowerUpType[] = ['magnet', 'shield', 'doubleCoins', 'superJump'];
+    const type = types[Math.floor(Math.random() * types.length)];
+
+    let color = 0x00FF00;
+    let emoji = '?';
+
+    switch (type) {
+      case 'magnet': color = 0xFF00FF; emoji = '🧲'; break;
+      case 'shield': color = 0x00BFFF; emoji = '🛡️'; break;
+      case 'doubleCoins': color = 0xFFD700; emoji = '×2'; break;
+      case 'superJump': color = 0x00FF00; emoji = '⬆️'; break;
+    }
+
+    // Glowing orb
+    const geom = new THREE.SphereGeometry(0.4, 16, 16);
+    const mat = new THREE.MeshPhongMaterial({
+      color: color,
+      emissive: color,
+      emissiveIntensity: 0.5,
+      transparent: true,
+      opacity: 0.8,
+      shininess: 100
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.y = 1.2;
+    group.add(mesh);
+
+    // Outer ring
+    const ringGeom = new THREE.TorusGeometry(0.5, 0.05, 8, 32);
+    const ringMat = new THREE.MeshPhongMaterial({
+      color: color,
+      emissive: color,
+      emissiveIntensity: 0.3,
+      transparent: true,
+      opacity: 0.6
+    });
+    const ring = new THREE.Mesh(ringGeom, ringMat);
+    ring.position.y = 1.2;
+    group.add(ring);
+
+    group.position.set((lane - 1) * this.laneWidth, 0, -60);
+    group.userData = { type: 'powerup', powerUpType: type, lane };
+    this.scene.add(group);
+    this.powerUps.push(group);
+  }
+
+  private activatePowerUp(type: PowerUpType): void {
+    this.activePowerUp = type;
+    this.powerUpDuration = 8.0; // 8 seconds
+
+    switch (type) {
+      case 'magnet':
+        this.magnetActive = true;
+        break;
+      case 'shield':
+        this.shieldActive = true;
+        const shield = this.player.getObjectByName('shield') as THREE.Mesh;
+        if (shield && shield.material instanceof THREE.MeshPhongMaterial) {
+          shield.material.opacity = 0.3;
+        }
+        break;
+      case 'doubleCoins':
+        this.doubleCoinsActive = true;
+        break;
+      case 'superJump':
+        this.superJumpActive = true;
+        break;
+    }
+  }
+
+  private deactivatePowerUp(): void {
+    this.magnetActive = false;
+    this.shieldActive = false;
+    this.doubleCoinsActive = false;
+    this.superJumpActive = false;
+    this.activePowerUp = null;
+
+    const shield = this.player.getObjectByName('shield') as THREE.Mesh;
+    if (shield && shield.material instanceof THREE.MeshPhongMaterial) {
+      shield.material.opacity = 0;
+    }
+  }
+
+  private createParticleEffect(position: THREE.Vector3, color: number, count: number = 15): void {
+    const particleCount = count;
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
     const velocities: THREE.Vector3[] = [];
@@ -486,7 +853,7 @@ export class GameEngine {
   jump(): void {
     if (!this.isJumping && !this.isSliding) {
       this.isJumping = true;
-      this.jumpVelocity = 0.25;
+      this.jumpVelocity = this.superJumpActive ? 0.35 : 0.25;
     }
   }
 
@@ -511,14 +878,21 @@ export class GameEngine {
     this.isJumping = false;
     this.isSliding = false;
     this.invincibleTimer = 0;
+    this.combo = 0;
+    this.comboTimer = 0;
+    this.comboMultiplier = 1;
+    this.currentWorldIndex = 0;
+    this.deactivatePowerUp();
 
-    // Clear obstacles and collectibles
     this.obstacles.forEach(o => this.scene.remove(o));
     this.collectibles.forEach(c => this.scene.remove(c));
+    this.powerUps.forEach(p => this.scene.remove(p));
     this.obstacles = [];
     this.collectibles = [];
+    this.powerUps = [];
 
     this.player.position.set(0, 0, 0);
+    this.applyWorldTheme(WORLDS[0]);
     this.lastTime = performance.now();
     this.animate();
   }
@@ -533,7 +907,6 @@ export class GameEngine {
 
   private animate = (): void => {
     if (!this.isPlaying) return;
-
     this.animationId = requestAnimationFrame(this.animate);
 
     const now = performance.now();
@@ -545,10 +918,29 @@ export class GameEngine {
   };
 
   private update(delta: number): void {
-    // Increase speed
     this.gameSpeed = Math.min(this.gameSpeed + this.speedIncrement * delta * 60, this.maxSpeed);
     this.distance += this.gameSpeed;
-    this.score = Math.floor(this.distance * 10);
+    this.score = Math.floor(this.distance * 10 * this.comboMultiplier);
+
+    // Update world theme
+    this.updateWorldTheme();
+
+    // Combo timer
+    if (this.combo > 0) {
+      this.comboTimer -= delta;
+      if (this.comboTimer <= 0) {
+        this.combo = 0;
+        this.comboMultiplier = 1;
+      }
+    }
+
+    // Power-up timer
+    if (this.activePowerUp) {
+      this.powerUpDuration -= delta;
+      if (this.powerUpDuration <= 0) {
+        this.deactivatePowerUp();
+      }
+    }
 
     // Move player to target lane
     const currentX = this.player.position.x;
@@ -576,7 +968,6 @@ export class GameEngine {
 
     this.player.position.y = this.playerY;
 
-    // Player animation
     if (this.isSliding) {
       this.player.scale.y = 0.5;
       this.player.position.y = 0.25;
@@ -584,13 +975,26 @@ export class GameEngine {
       this.player.scale.y = 1;
     }
 
-    // Running animation (leg movement)
+    // Running animation
     this.playerBounce += delta * this.gameSpeed * 40;
     const leftLeg = this.player.getObjectByName('leftLeg');
     const rightLeg = this.player.getObjectByName('rightLeg');
+    const leftArm = this.player.getObjectByName('leftArm');
+    const rightArm = this.player.getObjectByName('rightArm');
     if (leftLeg && rightLeg && !this.isJumping) {
       leftLeg.rotation.x = Math.sin(this.playerBounce) * 0.5;
       rightLeg.rotation.x = Math.sin(this.playerBounce + Math.PI) * 0.5;
+    }
+    if (leftArm && rightArm && !this.isJumping) {
+      leftArm.rotation.x = Math.sin(this.playerBounce + Math.PI) * 0.4;
+      rightArm.rotation.x = Math.sin(this.playerBounce) * 0.4;
+    }
+
+    // Shield visual pulse
+    const shield = this.player.getObjectByName('shield') as THREE.Mesh;
+    if (shield && shield.material instanceof THREE.MeshPhongMaterial && this.shieldActive) {
+      shield.material.opacity = 0.2 + Math.sin(Date.now() * 0.005) * 0.1;
+      shield.rotation.y += delta * 2;
     }
 
     // Invincibility
@@ -603,22 +1007,35 @@ export class GameEngine {
 
     // Spawn obstacles
     this.spawnTimer += delta;
-    if (this.spawnTimer > 1.5 / (this.gameSpeed * 5)) {
+    const spawnRate = Math.max(0.8, 2.0 - this.gameSpeed * 3);
+    if (this.spawnTimer > spawnRate) {
       this.spawnTimer = 0;
       this.createObstacle();
-      // Sometimes spawn double
-      if (Math.random() > 0.6) {
-        setTimeout(() => {
-          if (this.isPlaying) this.createObstacle();
-        }, 200);
+      if (Math.random() > 0.65) {
+        setTimeout(() => { if (this.isPlaying) this.createObstacle(); }, 200);
       }
     }
 
     // Spawn collectibles
     this.collectibleTimer += delta;
-    if (this.collectibleTimer > 0.8 / (this.gameSpeed * 4)) {
+    if (this.collectibleTimer > 0.6) {
       this.collectibleTimer = 0;
       this.createCollectible();
+      // Sometimes spawn a line of coins
+      if (Math.random() > 0.7) {
+        for (let i = 1; i <= 3; i++) {
+          setTimeout(() => { if (this.isPlaying) this.createCollectible(); }, i * 150);
+        }
+      }
+    }
+
+    // Spawn power-ups
+    this.powerUpTimer += delta;
+    if (this.powerUpTimer > 12) {
+      this.powerUpTimer = 0;
+      if (Math.random() > 0.4) {
+        this.createPowerUp();
+      }
     }
 
     // Spawn trees
@@ -645,23 +1062,38 @@ export class GameEngine {
       const obs = this.obstacles[i];
       obs.position.z += this.gameSpeed;
 
-      // Collision detection
       if (this.invincibleTimer <= 0) {
         const dx = Math.abs(obs.position.x - this.player.position.x);
         const dz = Math.abs(obs.position.z - this.player.position.z);
-        
+
         if (dx < 1.0 && dz < 0.8) {
-          // Check if jumping over or sliding under
-          if (this.isJumping && this.playerY > 1.2) {
-            // Jumped over
-          } else if (this.isSliding) {
-            // Slid under (only for tall obstacles)
+          const isLaser = obs.userData.isLaser;
+
+          if (isLaser && this.isSliding) {
+            // Slid under laser - safe!
+          } else if (this.isJumping && this.playerY > 1.2 && !isLaser) {
+            // Jumped over obstacle - safe!
+          } else if (this.shieldActive) {
+            // Shield absorbs hit
+            this.shieldActive = false;
+            this.activePowerUp = null;
+            this.powerUpDuration = 0;
+            const shieldMesh = this.player.getObjectByName('shield') as THREE.Mesh;
+            if (shieldMesh && shieldMesh.material instanceof THREE.MeshPhongMaterial) {
+              shieldMesh.material.opacity = 0;
+            }
+            this.createParticleEffect(obs.position.clone(), 0x00BFFF, 20);
+            this.scene.remove(obs);
+            this.obstacles.splice(i, 1);
+            continue;
           } else {
             // Hit!
             this.lives--;
             this.invincibleTimer = 2.0;
-            this.createParticleEffect(this.player.position.clone(), 0xFF0000);
-            
+            this.combo = 0;
+            this.comboMultiplier = 1;
+            this.createParticleEffect(this.player.position.clone(), 0xFF0000, 20);
+
             if (this.lives <= 0) {
               this.gameOver();
               return;
@@ -680,25 +1112,44 @@ export class GameEngine {
     for (let i = this.collectibles.length - 1; i >= 0; i--) {
       const col = this.collectibles[i];
       col.position.z += this.gameSpeed;
-
-      // Rotate collectible
       col.rotation.y += delta * 3;
 
-      // Bobbing animation
       const child = col.children[0];
       if (child) {
         child.position.y = 1.2 + Math.sin(Date.now() * 0.005 + i) * 0.15;
       }
 
-      // Collection detection
+      // Magnet effect - attract nearby coins
+      if (this.magnetActive) {
+        const dx = col.position.x - this.player.position.x;
+        const dz = col.position.z - this.player.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 5) {
+          col.position.x -= dx * 0.08;
+          col.position.z -= dz * 0.05;
+        }
+      }
+
+      // Collection
       const dx = Math.abs(col.position.x - this.player.position.x);
       const dz = Math.abs(col.position.z - this.player.position.z);
 
       if (dx < 1.2 && dz < 1.0) {
-        const value = col.userData.value || 1;
+        let value = col.userData.value || 1;
+        if (this.doubleCoinsActive) value *= 2;
+
+        // Combo
+        this.combo++;
+        this.comboTimer = 2.0;
+        this.comboMultiplier = 1 + Math.floor(this.combo / 5) * 0.5;
+        if (this.comboMultiplier > 5) this.comboMultiplier = 5;
+
         this.coins += value;
-        this.score += value * 10;
-        this.createParticleEffect(col.position.clone(), 0xFFD700);
+        this.score += value * 10 * this.comboMultiplier;
+        
+        const particleColor = col.userData.isSpecial ? 0x00BFFF : 0xFFD700;
+        this.createParticleEffect(col.position.clone(), particleColor, col.userData.isSpecial ? 25 : 10);
+        
         this.scene.remove(col);
         this.collectibles.splice(i, 1);
         continue;
@@ -707,6 +1158,34 @@ export class GameEngine {
       if (col.position.z > 10) {
         this.scene.remove(col);
         this.collectibles.splice(i, 1);
+      }
+    }
+
+    // Move power-ups
+    for (let i = this.powerUps.length - 1; i >= 0; i--) {
+      const pu = this.powerUps[i];
+      pu.position.z += this.gameSpeed;
+      pu.rotation.y += delta * 2;
+
+      const child = pu.children[0];
+      if (child) {
+        child.position.y = 1.2 + Math.sin(Date.now() * 0.004 + i) * 0.2;
+      }
+
+      const dx = Math.abs(pu.position.x - this.player.position.x);
+      const dz = Math.abs(pu.position.z - this.player.position.z);
+
+      if (dx < 1.2 && dz < 1.0) {
+        this.activatePowerUp(pu.userData.powerUpType);
+        this.createParticleEffect(pu.position.clone(), 0xFFFFFF, 25);
+        this.scene.remove(pu);
+        this.powerUps.splice(i, 1);
+        continue;
+      }
+
+      if (pu.position.z > 10) {
+        this.scene.remove(pu);
+        this.powerUps.splice(i, 1);
       }
     }
 
@@ -731,13 +1210,11 @@ export class GameEngine {
       }
     }
 
-    // Update particles
     this.updateParticles(delta);
 
-    // Camera follow
+    // Camera
     this.camera.position.x += (this.player.position.x * 0.3 - this.camera.position.x) * 0.05;
 
-    // Update state
     this.onStateChange({
       score: this.score,
       coins: this.coins,
@@ -745,7 +1222,17 @@ export class GameEngine {
       speed: this.gameSpeed,
       isGameOver: this.isGameOver,
       isPlaying: this.isPlaying,
-      lives: this.lives
+      lives: this.lives,
+      combo: this.combo,
+      comboMultiplier: this.comboMultiplier,
+      currentWorld: this.currentWorldIndex,
+      worldName: WORLDS[this.currentWorldIndex].name,
+      activePowerUp: this.activePowerUp,
+      powerUpTimer: this.powerUpDuration,
+      shieldActive: this.shieldActive,
+      magnetActive: this.magnetActive,
+      doubleCoinsActive: this.doubleCoinsActive,
+      superJumpActive: this.superJumpActive
     });
   }
 
@@ -763,7 +1250,17 @@ export class GameEngine {
       speed: this.gameSpeed,
       isGameOver: true,
       isPlaying: false,
-      lives: 0
+      lives: 0,
+      combo: this.combo,
+      comboMultiplier: this.comboMultiplier,
+      currentWorld: this.currentWorldIndex,
+      worldName: WORLDS[this.currentWorldIndex].name,
+      activePowerUp: null,
+      powerUpTimer: 0,
+      shieldActive: false,
+      magnetActive: false,
+      doubleCoinsActive: false,
+      superJumpActive: false
     });
   }
 
